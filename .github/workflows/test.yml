@@ -1,0 +1,29 @@
+name: Simulation and compile
+
+# Runs without hardware: the sketch's logic against a simulated accelerator,
+# and a real compile of the sketch for Teensy 4.1.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  simulation:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: make -C test
+
+  teensy-compile:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/setup-arduino-cli@v2
+        with:
+          version: 1.5.1
+      - run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls https://www.pjrc.com/teensy/package_teensy_index.json
+          arduino-cli core update-index
+          arduino-cli core install teensy:avr@1.62.0
+      - run: arduino-cli compile --fqbn teensy:avr:teensy41 --warnings all PtsaSleepTest
