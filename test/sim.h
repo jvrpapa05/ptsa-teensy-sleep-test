@@ -1,124 +1,67 @@
-// sim.h -- a simulated Teensy + accelerator for testing sleep_test_core on a PC.
-//
-// Time is simulated in 1 ms steps, so a 15 s sleep runs in milliseconds.
-// The accelerator side follows the sys_sleep contract in README.md;
-// the Teensy side models what matters to the test: whether it loses power with
-// the accelerator's rails (on the buck rail) or not (USB powered), its EEPROM,
-// which survives, and its RTC, which survives only with a coin cell.
+/*
+ * sim.h -- a simulated Teensy + accelerator for testing sleep_test_core on a PC.
+ *
+ * Time is simulated in 1 ms steps, so a 15 s sleep runs in milliseconds.
+ * The accelerator side follows the sys_sleep contract in README.md; the Teensy
+ * side models what matters to the test: whether it loses power with the
+ * accelerator's rails (on the rail) or not (USB powered), its EEPROM, which
+ * survives, and its RTC, which survives only with a coin cell.
+ */
 #ifndef SIM_H
 #define SIM_H
 
-#include <cstdio>
-#include <deque>
-#include <memory>
-#include <string>
-#include <vector>
+#include <stdbool.h>
+#include <stddef.h>
 
 #include "../PtsaSleepTest/src/sleep_test_core.h"
 
-struct AccelOptions {
-  std::string version = "7.12.1";
-  std::string reset_cause_after_wake = "software";
-  bool ack = true;           // print "Sleep for N s"
-  bool wake_early = false;   // bug: sleeps half the time
-  bool refuse = false;       // answer like a DFU session is open
-  uint32_t power_down_ms = 6000;
-  uint32_t boot_ms = 1500;   // reset -> banner -> shell ready
-};
+typedef struct {
+    char     version[16];
+    char     reset_cause_after_wake[16];
+    bool     ack;        /* print "Sleep for N s" */
+    bool     wake_early; /* bug: sleeps half the time */
+    bool     refuse;     /* answer as if a DFU session is open */
+    long     power_down_ms;
+    long     boot_ms;    /* reset -> banner -> shell ready */
+} accel_opts_t;
 
-struct World;
+#define SIM_TX_SIZE 8192
+#define SIM_LOG_MAX 64
 
-class FakeAccel {
- public:
-  FakeAccel(World& w, AccelOptions o) : w_(w), o_(o) {}
-  void rx(char c);           // byte from the Teensy
-  void tick();               // advance one ms
-  bool railsOn() const { return rails_; }
-  std::deque<char> tx;       // bytes to the Teensy
-  int sleeps = 0;            // how many sys_sleep commands were accepted
+typedef struct {
+    /* World */
+    long now; /* ms */
+    bool teensy_on_rail;
+    bool rtc_battery;
+    bool button;
 
- private:
-  void say(const std::string& s);
-  void handle(const std::string& line);
-  World& w_;
-  AccelOptions o_;
-  std::string in_;
-  bool rails_ = true;
-  bool shell_ = true;
-  long boot_at_ = 0;         // world time of last reset
-  long down_at_ = -1, wake_at_ = -1, ready_at_ = -1;
-  std::string reset_cause_ = "power-on";
-};
+    /* Teensy */
+    pst_persist_t eeprom; /* survives power loss */
+    bool          teensy_alive;
+    long          teensy_boot_at;
+    int           teensy_boots;
+    pst_hal_t     hal;
+    pst_test_t    test;
+    char          log[SIM_LOG_MAX][200];
+    int           nlog;
 
-class SimHal : public pst::Hal {
- public:
-  explicit SimHal(World& w) : w_(w) {}
-  uint32_t ms() override;
-  int uartRead() override;
-  void uartWrite(const char* s) override;
-  bool buttonDown() override;
-  void led(bool on) override { led_ = on; }
-  void log(const char* s) override;
-  void load(pst::Persist& p) override;
-  void save(const pst::Persist& p) override;
-  uint32_t rtc() override;
-  bool led_ = false;
+    /* Accelerator */
+    accel_opts_t o;
+    char         tx[SIM_TX_SIZE]; /* bytes to the Teensy, ring buffer */
+    size_t       tx_head, tx_tail;
+    char         in[128];
+    size_t       inlen;
+    bool         rails, shell;
+    long         boot_at, down_at, wake_at, ready_at;
+    char         reset_cause[16];
+    int          sleeps; /* sys_sleep commands accepted */
+} sim_t;
 
- private:
-  World& w_;
-};
+accel_opts_t sim_default_opts(void);
+void sim_init(sim_t *s, const accel_opts_t *o); /* Teensy on the rail, no RTC battery */
+void sim_step(sim_t *s);
+void sim_run(sim_t *s, long ms);
+void sim_press(sim_t *s, long hold_ms);
+bool sim_logged(const sim_t *s, const char *needle);
 
-struct World {
-  long now = 0;                       // ms
-  bool teensy_on_rail = true;         // false: powered from USB
-  bool rtc_battery = false;
-  bool button = false;
-  bool verbose = false;
-
-  pst::Persist eeprom{};              // survives power loss
-  bool eeprom_written = false;
-  long teensy_boot_at = 0;
-  std::vector<std::string> log;
-  std::unique_ptr<FakeAccel> accel;
-  std::unique_ptr<SimHal> hal;
-  std::unique_ptr<pst::SleepTest> test;
-  int teensy_boots = 0;
-
-  explicit World(AccelOptions o = AccelOptions()) { accel.reset(new FakeAccel(*this, o)); }
-
-  void bootTeensy() {
-    teensy_boot_at = now;
-    hal.reset(new SimHal(*this));
-    test.reset(new pst::SleepTest(*hal));
-    teensy_boots++;
-    test->begin();
-  }
-
-  void step() {
-    now++;
-    accel->tick();
-    bool powered = !teensy_on_rail || accel->railsOn();
-    if (!powered && test) {  // the Teensy loses power
-      test.reset();
-      hal.reset();
-    } else if (powered && !test) {
-      bootTeensy();
-    }
-    if (test) test->poll();
-  }
-
-  void run(long ms) { for (long i = 0; i < ms; i++) step(); }
-
-  void press(long hold_ms = 200) {
-    button = true;
-    run(hold_ms);
-    button = false;
-  }
-
-  bool logged(const std::string& needle) const {
-    for (auto& l : log) if (l.find(needle) != std::string::npos) return true;
-    return false;
-  }
-};
-
-#endif
+#endif /* SIM_H */

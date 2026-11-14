@@ -5,8 +5,8 @@ hardware accelerator (an nRF52840 board). Press the Teensy's button and the
 accelerator sleeps for **15 seconds**. The sketch then checks that it woke up
 properly.
 
-All the test logic is plain C++, so it also runs on a PC against a **simulated
-accelerator**, with no hardware needed.
+All the test logic is plain **C** (C11), so it also runs on a PC against a
+**simulated accelerator**, with no hardware needed.
 
 ## Wiring
 
@@ -84,10 +84,15 @@ arduino-cli compile --fqbn teensy:avr:teensy41 PtsaSleepTest
 
 ## The simulation
 
-`PtsaSleepTest/src/sleep_test_core.cpp` has no Arduino code: all hardware
-access goes through a small `Hal` class. On the PC, `test/` connects the same
-code to a simulated accelerator and Teensy, with a simulated clock, EEPROM, RTC
-coin cell and power rail. It runs 11 scenarios:
+`PtsaSleepTest/src/sleep_test_core.c` is plain C with no Arduino code: all
+hardware access goes through `pst_hal_t`, a struct of function pointers. The
+`.ino` only fills that struct in. Arduino always compiles a `.ino` as C++, and
+`Serial`/`Serial1` are C++ objects, but the `.ino` is kept to C-style
+functions.
+
+On the PC, `test/` (also C) connects the same code to a simulated accelerator
+and Teensy, with a simulated clock, EEPROM, RTC coin cell and power rail. It
+runs 11 scenarios:
 
 - passes on the rail, with and without an RTC battery
 - passes on USB power
@@ -100,7 +105,7 @@ coin cell and power rail. It runs 11 scenarios:
 - counts two tests in a row
 
 ```bash
-make -C test        # needs g++ and make (Linux, macOS, or Windows with MSYS2)
+make -C test        # needs a C compiler and make (Linux, macOS, or Windows with MSYS2)
 ```
 
 CI runs the simulation and compiles the sketch for Teensy 4.1 on every push.
